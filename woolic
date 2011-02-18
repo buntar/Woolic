@@ -1,0 +1,231 @@
+#!/usr/bin/perl 
+#
+# ./webout.pl
+#
+use warnings;
+use strict;
+use Cwd;
+use File::Basename;
+use File::Compare;
+use File::Spec qw(catpath);
+use File::Spec::Functions;
+use File::Path qw(make_path remove_tree);
+use File::Glob qw(glob);
+use Class::Struct;
+
+struct Vglobals=>[
+    Homebase => '%',
+    Preout => '%',
+    Htmlout => '%',
+    Predir => '%',
+    Htmldir => '%',
+];
+
+struct Globals=>[
+    Filext => '%',
+    Md2html => '%',
+    Preout => '%',
+    Htmlout => '%',
+    Prebase => '%',
+    Htmlbase => '%',
+    Header => '%',
+    Footer => '%',
+    Homebase => '%',
+    Basehd => '%',
+    Baseft => '%',
+];
+struct cursor=>[
+    file => '%', # file name
+    dir => '%', # directory delta
+];
+
+struct context=>[
+    srcdir => '%', # file name
+    srcpath => '%', # file name
+    predir => '%', # file name
+    prepath => '%', # file name
+    htmldir => '%', # file name
+    htmlpath => '%', # file name
+];
+struct Stage=>[
+    Mkdirpre => '%', # html preparation
+    Convpre => '%', # html preparation
+    Mkdirhtml=> '%', # convert to html
+    Convhtml => '%', # convert to html
+];
+
+# --
+sub mut{
+    my $rf = shift;
+    my $v = shift;
+    if ($$rf{mut} eq 'mutable'){
+        $$rf{val}= $v;
+    }else{
+        die "Error: the variable $$rf{tag} is immutable \n";
+    }
+}
+sub val{
+    my $rf = shift;
+    return $$rf{val};
+}
+# ==================
+my $V = Vglobals->new(
+    Homebase => 
+        { mut=>'',val => getcwd  },
+    Preout => 
+        { mut=>'',val => 'prehtml' },
+    Htmlout => 
+        { mut=>'',val => 'htmlout' },
+);
+
+my $G = Globals->new(
+    Filext => 
+        { mut=>'', val => ['txt','html'] },
+    Md2html => 
+        { mut=>'',val => 'pandoc -f markdown -t html' },
+    Preout => 
+        { mut=>'',val => val($V->Preout) },
+    Htmlout => 
+        { mut=>'',val => val($V->Htmlout) },
+    Htmlbase => 
+        { mut=>'',val => catfile(val($V->Homebase) ,val($V->Htmlout))},
+    Prebase => 
+        { mut=>'',val => catfile(val($V->Homebase) ,val($V->Preout))},
+    Header => 
+        { mut=>'',val => 'HEADER.txt' },
+    Footer => 
+        { mut=>'',val => 'FOOTER.txt' },
+    Homebase => 
+        { mut=>'',val => val($V->Homebase) },
+);
+
+my $S = Stage->new(
+    Mkdirpre =>
+        { tag=>''},
+    Mkdirhtml =>
+        { tag=>''},
+    Convpre  =>
+        { tag=>''},
+    Convhtml  =>
+        { tag=>''},
+);
+
+sub main{
+    my $c = cursor->new(
+        file => 
+            { mut=>'mutable',val => '' },
+        dir  => 
+            { mut=>'mutable',val => '' },
+    );
+
+    remove_tree(val($G->Prebase));
+    remove_tree(val($G->Htmlbase));
+
+    map{
+        mut($c->file, '');
+        mut($c->dir, '');
+        diritr($c, $_ );
+    } ($S->Mkdirpre, $S->Convpre, $S->Mkdirhtml, $S->Convhtml);
+
+}
+
+sub convhtml {
+    my ($c, $x) = @_;
+
+    my $prepath = val($x->prepath);
+    my($name,$path,$ext) = fileparse($prepath, '.txt');
+    my $htmlpath = catfile(val($x->htmldir), "$name.html");
+
+    qx(markdown $prepath > $htmlpath);
+}
+
+
+sub convpre {
+    my ($c, $x) = @_;
+
+    my $header='';
+    my $localhd = catfile(val($x->srcdir), val($G->Header));
+    my $basehd = catfile(val($G->Homebase), val($G->Header));
+    if    ( -f $localhd ) { $header=$localhd; }
+    elsif ( -f $basehd )  { $header=$basehd; }
+    else  { $header=''; }
+
+    my $footer='';
+    my $localft = catfile(val($x->srcdir), val($G->Footer));
+    my $baseft = catfile(val($G->Homebase), val($G->Footer));
+    if    ( -f $localft ) { $footer=$localft; }
+    elsif ( -f $baseft )  { $footer=$baseft; }
+    else{ $footer=''; }
+
+    if ( -f val($x->srcpath) ){
+        map{ if ( -f ){
+            open( my $inp, '<', $_) || die "Can't read $_: $!";
+            open( my $preout, '>>', val($x->prepath)) || die "Can't write $_: $!";
+            my $data = do { local $/; <$inp> };
+            print $preout $data;
+            }
+        } ( $header , val($x->srcpath) , $footer );
+    }
+}
+
+sub dispatch {
+    my ( $c, $stg ) = @_;
+    my $x = context->new(
+        srcpath => 
+            { mut=>'',val => catfile(val($G->Homebase),val($c->dir), val($c->file)) },
+        srcdir => 
+            { mut=>'',val => catfile(val($G->Homebase),val($c->dir)) },
+        prepath => 
+            { mut=>'',val => catfile(val($G->Prebase),val($c->dir), val($c->file)) },
+        predir => 
+            { mut=>'',val => catfile(val($G->Prebase),val($c->dir)) },
+        htmldir => 
+            { mut=>'',val => catfile(val($G->Htmlbase),val($c->dir)) },
+    );
+
+    if ( $stg == $S->Mkdirpre ){
+        unless ( -d val($x->predir) ){
+            make_path(val($x->predir));
+        }
+    }
+    elsif ( $stg == $S->Mkdirhtml ){
+        unless ( -d val($x->htmldir)){
+                make_path( val($x->htmldir));
+        }
+    }elsif ( $stg == $S->Convpre ){
+        convpre($c, $x);
+    }elsif ( $stg == $S->Convhtml ){
+        convhtml($c, $x);
+    }else {
+        die "Doesn't exist \n";
+    }
+}
+ 
+sub diritr {
+    my ( $c, $stg ) = @_;
+    my $path = catfile(val($G->Homebase), val($c->dir));
+    
+    map{
+        my $bcur = basename($_);
+        unless(($bcur eq val($G->Preout)) || ($bcur eq val($G->Htmlout))){ 
+            if ( -f ){
+                unless(($bcur eq val($G->Header)) || ($bcur eq val($G->Footer))){ 
+                    mut($c->file, basename($_));
+                    dispatch($c, $stg);
+                }
+            }
+            elsif ( -d ){
+                mut($c->dir, catfile(val($c->dir), basename($_)));
+                diritr($c, $stg );
+                mut($c->dir, dirname(val($c->dir)));
+            }
+        }
+    }grep  { 
+                ( -d )  || ( $_ =~  /\.txt$/ ) ;
+            }glob("$path/*") ;
+}
+
+
+
+
+main();
